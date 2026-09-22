@@ -1,17 +1,12 @@
 """
 Проверка наличия свободных мест в электронной очереди
 Паспортного сервиса (Мюнхен) и уведомление в Telegram.
-
-Сайт использует Alpine.js и обычный <select name="service" id="service">.
-При выборе услуги (value="4" = "Закордонний паспорт та (або) ID-картка")
-срабатывает x-on:change, который подгружает доступные дни (getDays).
-Если мест нет — на странице появляется текст "всі місця зайняті".
 """
 
 import os
 import sys
 import requests
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
 URL = "https://munich.pasport.org.ua/solutions/e-queue"
 SERVICE_SELECT = "select[name='service']"
@@ -36,16 +31,23 @@ def check_slots() -> bool:
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
-        page.goto(URL, wait_until="networkidle", timeout=30000)
 
-        # Выбираем услугу через обычный select — надёжнее кликов по тексту.
-        page.wait_for_selector(SERVICE_SELECT, timeout=15000)
+        page.goto(URL, wait_until="load", timeout=45000)
+        page.wait_for_timeout(5000)
+
+        for close_text in ["Закрити", "Продовжити", "Accept", "Прийняти"]:
+            try:
+                btn = page.get_by_text(close_text, exact=True).first
+                if btn.is_visible(timeout=1000):
+                    btn.click(timeout=1000)
+                    page.wait_for_timeout(1000)
+            except Exception:
+                pass
+
+        page.wait_for_selector(SERVICE_SELECT, state="visible", timeout=40000)
         page.select_option(SERVICE_SELECT, SERVICE_VALUE)
-
-        # Даём странице время подгрузить статус (Alpine x-on:change -> getDays).
         page.wait_for_timeout(4000)
 
-        # Проверяем, есть ли красное сообщение об отсутствии мест.
         no_slots = page.get_by_text(NO_SLOTS_TEXT, exact=False).count() > 0
 
         browser.close()
@@ -55,6 +57,9 @@ def check_slots() -> bool:
 def main():
     try:
         slots_available = check_slots()
+    except PWTimeout as e:
+        print(f"Таймаут при проверке (сайт мог не загрузиться вовремя): {e}", file=sys.stderr)
+        sys.exit(1)
     except Exception as e:
         print(f"Ошибка при проверке: {e}", file=sys.stderr)
         sys.exit(1)
