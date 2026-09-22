@@ -1,6 +1,9 @@
 """
 Проверка наличия свободных мест в электронной очереди
 Паспортного сервиса (Мюнхен) и уведомление в Telegram.
+
+Диагностический режим: скрипт всегда сохраняет screenshot.png,
+чтобы можно было увидеть, что реально видит браузер в CI.
 """
 
 import os
@@ -10,7 +13,7 @@ from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
 URL = "https://munich.pasport.org.ua/solutions/e-queue"
 SERVICE_SELECT = "select[name='service']"
-SERVICE_VALUE = "4"  # "Закордонний паспорт та (або) ID-картка"
+SERVICE_VALUE = "4"
 NO_SLOTS_TEXT = "всі місця зайняті"
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -27,13 +30,27 @@ def send_telegram(message: str) -> None:
 
 
 def check_slots() -> bool:
-    """Возвращает True, если похоже, что появились свободные места."""
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
+        page = browser.new_page(
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+            )
+        )
 
-        page.goto(URL, wait_until="load", timeout=45000)
+        try:
+            page.goto(URL, wait_until="load", timeout=45000)
+        except PWTimeout:
+            print("goto timeout, продолжаем с тем, что успело загрузиться")
+
         page.wait_for_timeout(5000)
+
+        page.screenshot(path="screenshot.png", full_page=True)
+        with open("page.html", "w", encoding="utf-8") as f:
+            f.write(page.content())
+        print(f"Текущий URL после загрузки: {page.url}")
+        print(f"Заголовок страницы: {page.title()}")
 
         for close_text in ["Закрити", "Продовжити", "Accept", "Прийняти"]:
             try:
@@ -44,12 +61,20 @@ def check_slots() -> bool:
             except Exception:
                 pass
 
-        page.wait_for_selector(SERVICE_SELECT, state="visible", timeout=40000)
+        try:
+            page.wait_for_selector(SERVICE_SELECT, state="visible", timeout=20000)
+        except PWTimeout:
+            page.screenshot(path="screenshot.png", full_page=True)
+            with open("page.html", "w", encoding="utf-8") as f:
+                f.write(page.content())
+            browser.close()
+            raise
+
         page.select_option(SERVICE_SELECT, SERVICE_VALUE)
         page.wait_for_timeout(4000)
-
         no_slots = page.get_by_text(NO_SLOTS_TEXT, exact=False).count() > 0
 
+        page.screenshot(path="screenshot.png", full_page=True)
         browser.close()
         return not no_slots
 
@@ -57,9 +82,6 @@ def check_slots() -> bool:
 def main():
     try:
         slots_available = check_slots()
-    except PWTimeout as e:
-        print(f"Таймаут при проверке (сайт мог не загрузиться вовремя): {e}", file=sys.stderr)
-        sys.exit(1)
     except Exception as e:
         print(f"Ошибка при проверке: {e}", file=sys.stderr)
         sys.exit(1)
