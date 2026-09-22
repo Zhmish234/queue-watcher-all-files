@@ -2,34 +2,20 @@
 Проверка наличия свободных мест в электронной очереди
 Паспортного сервиса (Мюнхен) и уведомление в Telegram.
 
-Как это работает:
-1. Открываем страницу https://munich.pasport.org.ua/solutions/e-queue
-   в headless-браузере (Playwright), потому что доступность мест
-   подгружается через JavaScript, а не видна в исходном HTML.
-2. Кликаем на поле "Послуга" -> "Обрати" -> выбираем
-   "Закордонний паспорт та (або) ID-картка".
-3. Смотрим, появляется ли красное сообщение
-   "Вибачте, на даний момент всі місця зайняті!".
-   - Если сообщение ЕСТЬ -> мест нет, ничего не делаем.
-   - Если сообщения НЕТ -> место(а) освободились -> шлём алерт в Telegram.
-
-ВАЖНО: сайт использует кастомный (не нативный <select>) выпадающий
-список, поэтому селекторы ниже подобраны по видимому тексту, а не
-по CSS id/классам (я не могу выполнить JS сайта заранее, чтобы
-подсмотреть точную разметку). Если после первого ручного теста
-(см. README, шаг "Отладка") окажется, что элемент не находится —
-открой сайт в Chrome, нажми F12 -> Elements, наведи на поле
-"Послуга" и пришли мне точный HTML — я поправлю селекторы.
+Сайт использует Alpine.js и обычный <select name="service" id="service">.
+При выборе услуги (value="4" = "Закордонний паспорт та (або) ID-картка")
+срабатывает x-on:change, который подгружает доступные дни (getDays).
+Если мест нет — на странице появляется текст "всі місця зайняті".
 """
 
 import os
 import sys
 import requests
-from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
+from playwright.sync_api import sync_playwright
 
 URL = "https://munich.pasport.org.ua/solutions/e-queue"
-SERVICE_LABEL_TEXT = "Послуга"
-SERVICE_OPTION_TEXT = "Закордонний паспорт та (або) ID-картка"
+SERVICE_SELECT = "select[name='service']"
+SERVICE_VALUE = "4"  # "Закордонний паспорт та (або) ID-картка"
 NO_SLOTS_TEXT = "всі місця зайняті"
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -52,39 +38,12 @@ def check_slots() -> bool:
         page = browser.new_page()
         page.goto(URL, wait_until="networkidle", timeout=30000)
 
-        # Открываем выпадающий список "Послуга".
-        # Пытаемся несколько вариантов селектора, т.к. точная разметка неизвестна.
-        opened = False
-        for attempt in [
-            lambda: page.get_by_text("Обрати", exact=True).first.click(timeout=5000),
-            lambda: page.locator("select").first.click(timeout=5000),
-        ]:
-            try:
-                attempt()
-                opened = True
-                break
-            except PWTimeout:
-                continue
+        # Выбираем услугу через обычный select — надёжнее кликов по тексту.
+        page.wait_for_selector(SERVICE_SELECT, timeout=15000)
+        page.select_option(SERVICE_SELECT, SERVICE_VALUE)
 
-        if not opened:
-            browser.close()
-            raise RuntimeError(
-                "Не удалось открыть выпадающий список 'Послуга' — "
-                "нужно поправить селектор (см. инструкцию в README)."
-            )
-
-        # Выбираем нужную услугу.
-        try:
-            page.get_by_text(SERVICE_OPTION_TEXT, exact=False).first.click(timeout=5000)
-        except PWTimeout:
-            browser.close()
-            raise RuntimeError(
-                f"Не нашёл пункт '{SERVICE_OPTION_TEXT}' в списке услуг — "
-                "нужно поправить селектор (см. инструкцию в README)."
-            )
-
-        # Даём странице время подгрузить статус (AJAX).
-        page.wait_for_timeout(3000)
+        # Даём странице время подгрузить статус (Alpine x-on:change -> getDays).
+        page.wait_for_timeout(4000)
 
         # Проверяем, есть ли красное сообщение об отсутствии мест.
         no_slots = page.get_by_text(NO_SLOTS_TEXT, exact=False).count() > 0
@@ -98,8 +57,6 @@ def main():
         slots_available = check_slots()
     except Exception as e:
         print(f"Ошибка при проверке: {e}", file=sys.stderr)
-        # Не шлём алерт при технической ошибке, только пишем в лог,
-        # чтобы не спамить ложными "местами есть".
         sys.exit(1)
 
     if slots_available:
