@@ -22,14 +22,11 @@ def send_telegram(message):
     resp.raise_for_status()
 
 
-def describe_selects(page):
-    info = []
-    for s in page.locator("select").all():
-        try:
-            info.append((s.get_attribute("name"), s.is_visible(), s.is_enabled(), s.locator("option").count()))
-        except Exception:
-            pass
-    return info
+def date_option_count(page):
+    try:
+        return page.locator("select[name='date']").locator("option").count()
+    except Exception:
+        return 0
 
 
 def check_slots():
@@ -47,23 +44,22 @@ def check_slots():
         page.select_option(SERVICE_SELECT, SERVICE_VALUE)
 
         result = None
-        deadline = time.time() + 60
+        deadline = time.time() + 25
         while time.time() < deadline:
             if page.get_by_text(NO_SLOTS_TEXT, exact=False).count() > 0:
                 result = False
                 break
-            for name, vis, en, n in describe_selects(page):
-                if name != "service" and vis and en and n > 1:
-                    result = True
-            if result is not None:
+            if date_option_count(page) > 1:
+                result = True
                 break
             page.wait_for_timeout(1000)
 
-        page.screenshot(path="screenshot.png", full_page=True)
-        print("selects:", describe_selects(page))
-        browser.close()
         if result is None:
-            raise RuntimeError("Страница не дозагрузилась за 60 сек, результат неясен")
+            result = date_option_count(page) > 1
+
+        page.screenshot(path="screenshot.png", full_page=True)
+        print("итоговое число опций в 'день':", date_option_count(page))
+        browser.close()
         return result
 
 
